@@ -1,23 +1,27 @@
 import numpy as np
 import torch
 
+
 def hf_masked_encode(
-        tokenizer,
-        sentence: str,
-        *addl_sentences,
-        noise_prob=0.0,
-        random_token_prob=0.0,
-        leave_unmasked_prob=0.0):
+    tokenizer,
+    sentence: str,
+    *addl_sentences,
+    noise_prob=0.0,
+    random_token_prob=0.0,
+    leave_unmasked_prob=0.0
+):
 
     if random_token_prob > 0.0:
         weights = np.ones(len(tokenizer.vocab))
         weights[tokenizer.all_special_ids] = 0
         for k, v in tokenizer.vocab.items():
-            if '[unused' in k:
+            if "[unused" in k:
                 weights[v] = 0
         weights = weights / weights.sum()
 
-    tokens = np.asarray(tokenizer.encode(sentence, *addl_sentences, add_special_tokens=True))
+    tokens = np.asarray(
+        tokenizer.encode(sentence, *addl_sentences, add_special_tokens=True)
+    )
 
     if noise_prob == 0.0:
         return tokens
@@ -28,7 +32,11 @@ def hf_masked_encode(
 
     mask_choice_p = np.ones(sz)
     for i in range(sz):
-        if tokens[i] in [tokenizer.sep_token_id, tokenizer.cls_token_id, tokenizer.pad_token_id]:
+        if tokens[i] in [
+            tokenizer.sep_token_id,
+            tokenizer.cls_token_id,
+            tokenizer.pad_token_id,
+        ]:
             mask_choice_p[i] = 0
     mask_choice_p = mask_choice_p / mask_choice_p.sum()
 
@@ -60,9 +68,7 @@ def hf_masked_encode(
         num_rand = rand_mask.sum()
         if num_rand > 0:
             tokens[rand_mask] = np.random.choice(
-                len(tokenizer.vocab),
-                num_rand,
-                p=weights,
+                len(tokenizer.vocab), num_rand, p=weights,
             )
 
     mask_targets = np.full(len(mask), tokenizer.pad_token_id)
@@ -70,7 +76,16 @@ def hf_masked_encode(
 
     return torch.tensor(tokens).long(), torch.tensor(mask_targets).long()
 
-def hf_reconstruction_prob_tok(masked_tokens, target_tokens, tokenizer, model, softmax_mask, reconstruct=False, topk=1):
+
+def hf_reconstruction_prob_tok(
+    masked_tokens,
+    target_tokens,
+    tokenizer,
+    model,
+    softmax_mask,
+    reconstruct=False,
+    topk=1,
+):
     single = False
 
     # expand batch size 1
@@ -81,7 +96,9 @@ def hf_reconstruction_prob_tok(masked_tokens, target_tokens, tokenizer, model, s
 
     masked_fill = torch.ones_like(masked_tokens)
 
-    masked_index = (target_tokens != tokenizer.pad_token_id).nonzero(as_tuple=True)
+    masked_index = (target_tokens != tokenizer.pad_token_id).nonzero(
+        as_tuple=True
+    )
     masked_orig_index = target_tokens[masked_index]
 
     # edge case of no masked tokens
@@ -95,32 +112,38 @@ def hf_reconstruction_prob_tok(masked_tokens, target_tokens, tokenizer, model, s
 
     outputs = model(
         masked_tokens.long().to(device=next(model.parameters()).device),
-        labels=target_tokens
+        labels=target_tokens,
     )
 
     features = outputs[1]
 
     logits = features[masked_index].detach().clone()
     for l in logits:
-        l[softmax_mask] = float('-inf')
+        l[softmax_mask] = float("-inf")
     probs = logits.softmax(dim=-1)
 
-
-    if (reconstruct):
+    if reconstruct:
 
         # sample from topk
         if topk != -1:
             values, indices = probs.topk(k=topk, dim=-1)
             kprobs = values.softmax(dim=-1)
-            if (len(masked_index) > 1):
-                samples = torch.cat([idx[torch.multinomial(kprob, 1)] for kprob, idx in zip(kprobs, indices)])
+            if len(masked_index) > 1:
+                samples = torch.cat(
+                    [
+                        idx[torch.multinomial(kprob, 1)]
+                        for kprob, idx in zip(kprobs, indices)
+                    ]
+                )
             else:
                 samples = indices[torch.multinomial(kprobs, 1)]
 
         # unrestricted sampling
         else:
-            if (len(masked_index) > 1):
-                samples = torch.cat([torch.multinomial(prob, 1) for prob in probs])
+            if len(masked_index) > 1:
+                samples = torch.cat(
+                    [torch.multinomial(prob, 1) for prob in probs]
+                )
             else:
                 samples = torch.multinomial(probs, 1)
 
@@ -135,19 +158,22 @@ def hf_reconstruction_prob_tok(masked_tokens, target_tokens, tokenizer, model, s
 
     return torch.sum(torch.log(probs[masked_orig_enum])).item()
 
-def fill_batch(args,
-               tokenizer,
-               sents,
-               l,
-               lines,
-               labels,
-               next_sent,
-               num_gen,
-               num_tries,
-               gen_index):
+
+def fill_batch(
+    args,
+    tokenizer,
+    sents,
+    l,
+    lines,
+    labels,
+    next_sent,
+    num_gen,
+    num_tries,
+    gen_index,
+):
 
     # load sentences into batch until full
-    while(len(sents) < args.batch):
+    while len(sents) < args.batch:
 
         # search for the next valid sentence
         while True:
