@@ -3,7 +3,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModelWithLMHead
+from transformers import BertTokenizerFast, BertForMaskedLM, RobertaTokenizerFast, RobertaForMaskedLM 
 from utils import hf_masked_encode, hf_reconstruction_prob_tok, fill_batch
 
 def gen_neighborhood(args):
@@ -14,8 +14,20 @@ def gen_neighborhood(args):
         np.random.seed(args.seed)
 
     # load model and tokenizer
-    r_model = AutoModelWithLMHead.from_pretrained(args.model)
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+
+    if args.is_roberta:
+        r_model = RobertaForMaskedLM.from_pretrained(args.model)
+        tokenizer = RobertaTokenizerFast.from_pretrained(args.tokenizer, max_len=512)
+    else:
+        tokenizer = BertTokenizerFast.from_pretrained(
+            args.tokenizer,
+            clean_text=True,
+            tokenize_chinese_chars=True,
+            strip_accents=False,
+            do_lower_case=False,
+        )
+        r_model = BertForMaskedLM.from_pretrained(args.model)
+
     r_model.eval()
     if torch.cuda.is_available():
         r_model.cuda()
@@ -245,6 +257,8 @@ if __name__ == "__main__":
     parser.add_argument('--topk', '-k', type=int, default=-1,
             help='Top k to use for sampling reconstructed tokens from'
             ' the BERT model. -1 indicates unrestricted sampling.')
+
+    parser.add_argument('--is-roberta', action='store_true')
 
     args = parser.parse_args()
 

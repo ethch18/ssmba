@@ -95,7 +95,7 @@ def hf_reconstruction_prob_tok(masked_tokens, target_tokens, tokenizer, model, s
 
     outputs = model(
         masked_tokens.long().to(device=next(model.parameters()).device),
-        masked_lm_labels=target_tokens
+        labels=target_tokens
     )
 
     features = outputs[1]
