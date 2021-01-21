@@ -170,6 +170,8 @@ def fill_batch(
     num_gen,
     num_tries,
     gen_index,
+    unks,
+    no_unk_tokenizer,
 ):
 
     # load sentences into batch until full
@@ -190,9 +192,38 @@ def fill_batch(
 
         # add it to our lists
         if next_sent < len(lines[0]):
+            # list of the values at next_sent index for each column in file
             next_sent_lists = [s_list[next_sent] for s_list in lines]
-            sents.append(list(zip(*next_sent_lists)))
+            # list of tuples, where each tuple contains the information
+            # for the different columns in the line, and subsequent tuples
+            # after the 0th are augmented.  at this point, nothing should
+            # be augmented, so there should only be one tuple, which is a
+            # singleton if there's only one column
+            sentence_data = list(zip(*next_sent_lists))
+            if len(sentence_data) > 1 or len(sentence_data[0]) > 1:
+                import pdb
+
+                pdb.set_trace()
+            sents.append(sentence_data)
             l.append(labels[next_sent])
+
+            # TODO: remove second part after debugging
+            unks.append(
+                (
+                    tuple(
+                        get_unk_toks_indices(
+                            field, tokenizer, no_unk_tokenizer
+                        )
+                        for field in sentence_data[0]
+                    ),
+                    tuple(
+                        tokenizer.decode(
+                            tokenizer.encode(field, add_special_tokens=False)
+                        )
+                        for field in sentence_data[0]
+                    ),
+                )
+            )
 
             num_gen.append(0)
             num_tries.append(0)
@@ -201,5 +232,69 @@ def fill_batch(
         else:
             break
 
-    return sents, l, next_sent, num_gen, num_tries, gen_index
+    return sents, l, next_sent, num_gen, num_tries, gen_index, unks
+
+
+def get_unk_toks_indices(sentence, tokenizer, no_unk_tokenizer):
+    import pdb
+
+    pdb.set_trace()
+
+    new_chunks = tokenizer.tokenize(sentence)
+    no_unk_chunks = no_unk_tokenizer.tokenize(sentence)
+
+    indices = tokenizer.encode(sentence, add_special_tokens=False)
+    decoded = tokenizer.decode(indices)
+
+    sentence_chunks = sentence.split(" ")
+    tokenizer_chunks = decoded.split(" ")
+    result = []
+
+    # TODO remove the below and see if there's a way to get the no_unk_tokenizer
+    # to actually not use unks
+
+    j = 0
+    for i in range(len(tokenizer_chunks)):
+        if tokenizer_chunks[i] == tokenizer.unk_token:
+            prev = None if i == 0 else tokenizer_chunks[i - 1]
+            next = (
+                None
+                if i >= len(tokenizer_chunks) - 1
+                else tokenizer_chunks[i + 1]
+            )
+            curr_j = j
+            found = False
+            while curr_j < len(sentence_chunks):
+                j_prev: str = None if curr_j == 0 else sentence_chunks[
+                    curr_j - 1
+                ]
+                j_next: str = None if curr_j >= len(
+                    sentence_chunks
+                ) - 1 else sentence_chunks[curr_j + 1]
+
+                # we can use endswith because the tokenizer is going to
+                # only introduce whitespace, not take it away
+                # there's a chance of a false match but oh well...
+                prev_ok = (j_prev is None and prev is None) or (
+                    j_prev is not None
+                    and prev is not None
+                    and j_prev.endswith(prev)
+                )
+                next_ok = (j_next is None and next is None) or (
+                    j_next is not None
+                    and next is not None
+                    and j_next.startswith(next)
+                )
+                if prev_ok and next_ok:
+                    # masking/filling isn't going to introduce any more tokens,
+                    # so the whitespace indexing here is correct from now on
+                    result.append((i, sentence_chunks[j]))
+                    found = True
+                    break
+                curr_j += 1
+            if found:
+                # only want to update if we've found something
+                j = curr_j + 1
+
+    return result
 

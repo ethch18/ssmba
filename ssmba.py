@@ -4,8 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import (
+    BertTokenizer,
     BertTokenizerFast,
     BertForMaskedLM,
+    RobertaTokenizer,
     RobertaTokenizerFast,
     RobertaForMaskedLM,
 )
@@ -21,9 +23,14 @@ def gen_neighborhood(args):
 
     # load model and tokenizer
 
+    # slow tokenizer doesn't replace unk tokens when calling tokenize()
+    # https://github.com/huggingface/transformers/blob/7acfa95afb8194f8f9c1f4d2c6028224dbed35a2/src/transformers/tokenization_utils_base.py#L2031
     if args.is_roberta:
         r_model = RobertaForMaskedLM.from_pretrained(args.model)
         tokenizer = RobertaTokenizerFast.from_pretrained(
+            args.tokenizer, max_len=512
+        )
+        old_style_tokenizer = RobertaTokenizer.from_pretrained(
             args.tokenizer, max_len=512
         )
     else:
@@ -33,6 +40,12 @@ def gen_neighborhood(args):
             tokenize_chinese_chars=True,
             strip_accents=False,
             do_lower_case=False,
+        )
+        old_style_tokenizer = BertTokenizer.from_pretrained(
+            args.tokenizer,
+            do_lower_case=False,
+            strip_accents=False,
+            tokenize_chinese_chars=True,
         )
         r_model = BertForMaskedLM.from_pretrained(args.model)
 
@@ -52,6 +65,8 @@ def gen_neighborhood(args):
         tuple(s.strip().split("\t")) for s in open(args.in_file).readlines()
     ]
     num_lines = len(lines)
+    # lines[i] is a list of [s], where s is each sentence in the ith column
+    # of the file
     lines = [[[s] for s in s_list] for s_list in list(zip(*lines))]
 
     # load label file if it exists
@@ -97,7 +112,11 @@ def gen_neighborhood(args):
     # next sentence index to draw from
     next_sent = 0
 
-    sents, l, next_sent, num_gen, num_tries, gen_index = fill_batch(
+    # indices and words corresponding to each instance of [UNK] / <unk> for the
+    # sentences in sents
+    unks = []
+
+    sents, l, next_sent, num_gen, num_tries, gen_index, unks = fill_batch(
         args,
         tokenizer,
         sents,
@@ -108,6 +127,8 @@ def gen_neighborhood(args):
         num_gen,
         num_tries,
         gen_index,
+        unks,
+        old_style_tokenizer,
     )
 
     # main augmentation loop
@@ -122,9 +143,15 @@ def gen_neighborhood(args):
                 num_gen.pop(i)
                 gen_index.pop(i)
                 label = l.pop(i)
+                unk = unks.pop(i)
 
                 # write generated sentences
                 for sg in gen_sents[1:]:
+                    import pdb
+
+                    pdb.set_trace()
+                    # the [1:-1] here refers to some weirdness that repr() does
+                    # on strings -- namely, adding quotes at the start and end
                     s_rec_file.write(
                         "\t".join([repr(val)[1:-1] for val in sg]) + "\n"
                     )
@@ -132,7 +159,7 @@ def gen_neighborhood(args):
                         l_rec_file.write(label + "\n")
 
         # fill batch
-        sents, l, next_sent, num_gen, num_tries, gen_index = fill_batch(
+        sents, l, next_sent, num_gen, num_tries, gen_index, unks = fill_batch(
             args,
             tokenizer,
             sents,
@@ -143,6 +170,8 @@ def gen_neighborhood(args):
             num_gen,
             num_tries,
             gen_index,
+            unks,
+            old_style_tokenizer,
         )
 
         # break if done dumping
