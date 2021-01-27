@@ -169,12 +169,12 @@ def gen_neighborhood(args):
                 num_gen.pop(i)
                 gen_index.pop(i)
                 label = l.pop(i)
-                unk = unks.pop(i)
+                unk_list = unks.pop(i)
 
-                total_unks_in_base_corpus += len(unk[0])
+                total_unks_in_base_corpus += len(unk_list[0][0])
 
                 # write generated sentences
-                for sg in gen_sents[1:]:
+                for sg, unk in zip(gen_sents[1:], unk_list[1:]):
                     # the [1:-1] here refers to some weirdness that repr() does
                     # on strings -- namely, adding quotes at the start and end
                     de_unked = [
@@ -259,13 +259,22 @@ def gen_neighborhood(args):
         # decode reconstructions and append to lists
         for i in range(len(rec)):
             rec_work = rec[i].cpu().tolist()
+            meaningful_ids = [
+                val for val in rec_work if val != tokenizer.pad_token_id
+            ][1:-1]
+            # TODO (maybe) make this work with multiple sentences
+            # this would involve splitting on tokenizer.sep_token_id and
+            # doing this for each sentence
+            curr_unk_data = get_current_unk_data(
+                meaningful_ids, unks[i][0][0], tokenizer.unk_token_id
+            )
+            curr_unk_data = (curr_unk_data,)
+
             s_rec = [
                 s.strip()
-                for s in tokenizer.decode(
-                    [val for val in rec_work if val != tokenizer.pad_token_id][
-                        1:-1
-                    ]
-                ).split(tokenizer.sep_token)
+                for s in tokenizer.decode(meaningful_ids).split(
+                    tokenizer.sep_token
+                )
             ]
             s_rec = tuple(s_rec)
 
@@ -275,6 +284,7 @@ def gen_neighborhood(args):
                 num_gen[i] += 1
                 num_tries[i] = 0
                 gen_index[i] = 0
+                unks[i].append(curr_unk_data)
 
             # otherwise try next sentence
             else:
@@ -288,15 +298,31 @@ def gen_neighborhood(args):
         del masks
 
 
+def get_current_unk_data(current_ids, base_unk_data, unk_token_id):
+    return {
+        unk_idx: unk_val
+        for unk_idx, unk_val in base_unk_data.items()
+        if current_ids[unk_idx] == unk_token_id
+    }
+
+
 def de_unk(sentence, unk_data, tokenizer):
-    current_unks = []
-    ids = tokenizer.encode(sentence, add_special_tokens=False)
-    unk_token_id = tokenizer.convert_tokens_to_ids(tokenizer.unk_token)
-    for unk_idx, unk_val in unk_data.items():
-        if ids[unk_idx] == unk_token_id:
-            current_unks.append((unk_idx, unk_val))
+    # current_unks = []
+    # ids = tokenizer.encode(sentence, add_special_tokens=False)
+    # unk_token_id = tokenizer.convert_tokens_to_ids(tokenizer.unk_token)
+    # for unk_idx, unk_val in unk_data.items():
+    #     try:
+    #         if ids[unk_idx] == unk_token_id:
+    #             current_unks.append((unk_idx, unk_val))
+    #     except:
+    #         import pdb
+
+    #         pdb.set_trace()
+    current_unks = list(unk_data.items())
     current_unks.sort(key=lambda tup: tup[0])
     for _, unk_val in current_unks:
+        # assertion since this throws an error on failure
+        sentence.index(tokenizer.unk_token)
         sentence = sentence.replace(tokenizer.unk_token, unk_val, 1)
     return sentence
 

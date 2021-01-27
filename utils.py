@@ -209,10 +209,14 @@ def fill_batch(
             l.append(labels[next_sent])
 
             unks.append(
-                tuple(
-                    get_unk_toks_indices(field, tokenizer, old_style_tokenizer)
-                    for field in sentence_data[0]
-                )
+                [
+                    tuple(
+                        get_unk_toks_indices(
+                            field, tokenizer, old_style_tokenizer
+                        )
+                        for field in sentence_data[0]
+                    )
+                ]
             )
 
             num_gen.append(0)
