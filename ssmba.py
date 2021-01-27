@@ -23,8 +23,7 @@ def gen_neighborhood(args):
 
     # load model and tokenizer
 
-    # slow tokenizer doesn't replace unk tokens when calling tokenize()
-    # https://github.com/huggingface/transformers/blob/7acfa95afb8194f8f9c1f4d2c6028224dbed35a2/src/transformers/tokenization_utils_base.py#L2031
+    # slow tokenizer is for non-unk decoding
     if args.is_roberta:
         r_model = RobertaForMaskedLM.from_pretrained(args.model)
         tokenizer = RobertaTokenizerFast.from_pretrained(
@@ -32,6 +31,12 @@ def gen_neighborhood(args):
         )
         old_style_tokenizer = RobertaTokenizer.from_pretrained(
             args.tokenizer, max_len=512
+        )
+        mask_length = max(
+            len(tokenizer.vocab), r_model.lm_head.decoder.out_features
+        )
+        start_ignore = min(
+            len(tokenizer.vocab), r_model.lm_head.decoder.out_features
         )
     else:
         tokenizer = BertTokenizerFast.from_pretrained(
@@ -49,16 +54,31 @@ def gen_neighborhood(args):
         )
         r_model = BertForMaskedLM.from_pretrained(args.model)
 
+        assert (
+            len(tokenizer.vocab)
+            == r_model.cls.predictions.decoder.out_features
+        )
+        mask_length = len(tokenizer.vocab)
+        start_ignore = mask_length
+
     r_model.eval()
     if torch.cuda.is_available():
         r_model.cuda()
 
     # remove unused vocab and special ids from sampling
-    softmax_mask = np.full(len(tokenizer.vocab), False)
+    softmax_mask = np.full(mask_length, False)
     softmax_mask[tokenizer.all_special_ids] = True
     for k, v in tokenizer.vocab.items():
         if "[unused" in k:
             softmax_mask[v] = True
+    for i in range(start_ignore, mask_length):
+        # this is what happens if your vocab is smaller than it claims to be
+        # we'll never use the rest of the ids anyways so we should mask them
+        softmax_mask[i] = True
+        if not args.is_roberta:
+            import pdb
+
+            pdb.set_trace()
 
     # load the inputs and labels
     lines = [
@@ -87,12 +107,16 @@ def gen_neighborhood(args):
     # open output files
     if args.num_shards != 1:
         s_rec_file = open(args.output_prefix + "_" + str(args.shard), "w")
+        unk_rec_file = open(
+            args.output_prefix, "_unks_" + str(args.shard), "w"
+        )
         if output_labels:
             l_rec_file = open(
                 args.output_prefix + "_" + str(args.shard) + ".label", "w"
             )
     else:
         s_rec_file = open(args.output_prefix, "w")
+        unk_rec_file = open(args.output_prefix + "_unks", "w")
         if output_labels:
             l_rec_file = open(args.output_prefix + ".label", "w")
 
@@ -131,6 +155,8 @@ def gen_neighborhood(args):
         old_style_tokenizer,
     )
 
+    total_unks_in_base_corpus = 0
+
     # main augmentation loop
     while sents != []:
 
@@ -145,16 +171,20 @@ def gen_neighborhood(args):
                 label = l.pop(i)
                 unk = unks.pop(i)
 
+                total_unks_in_base_corpus += len(unk[0])
+
                 # write generated sentences
                 for sg in gen_sents[1:]:
-                    import pdb
-
-                    pdb.set_trace()
                     # the [1:-1] here refers to some weirdness that repr() does
                     # on strings -- namely, adding quotes at the start and end
-                    s_rec_file.write(
-                        "\t".join([repr(val)[1:-1] for val in sg]) + "\n"
-                    )
+                    de_unked = [
+                        de_unk(repr(val)[1:-1], unk[i], tokenizer)
+                        for i, val in enumerate(sg)
+                    ]
+                    orig = [repr(val)[1:-1] for val in sg]
+
+                    s_rec_file.write("\t".join(de_unked) + "\n")
+                    unk_rec_file.write("\t".join(orig) + "\n")
                     if output_labels:
                         l_rec_file.write(label + "\n")
 
@@ -176,6 +206,7 @@ def gen_neighborhood(args):
 
         # break if done dumping
         if len(sents) == 0:
+            print(f"Total unks in base corpus: {total_unks_in_base_corpus}")
             break
 
         # build batch
@@ -255,6 +286,19 @@ def gen_neighborhood(args):
         # clean up tensors
         del toks
         del masks
+
+
+def de_unk(sentence, unk_data, tokenizer):
+    current_unks = []
+    ids = tokenizer.encode(sentence, add_special_tokens=False)
+    unk_token_id = tokenizer.convert_tokens_to_ids(tokenizer.unk_token)
+    for unk_idx, unk_val in unk_data.items():
+        if ids[unk_idx] == unk_token_id:
+            current_unks.append((unk_idx, unk_val))
+    current_unks.sort(key=lambda tup: tup[0])
+    for _, unk_val in current_unks:
+        sentence = sentence.replace(tokenizer.unk_token, unk_val, 1)
+    return sentence
 
 
 if __name__ == "__main__":

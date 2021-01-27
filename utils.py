@@ -1,3 +1,4 @@
+from io import UnsupportedOperation
 import numpy as np
 import torch
 
@@ -8,7 +9,7 @@ def hf_masked_encode(
     *addl_sentences,
     noise_prob=0.0,
     random_token_prob=0.0,
-    leave_unmasked_prob=0.0
+    leave_unmasked_prob=0.0,
 ):
 
     if random_token_prob > 0.0:
@@ -171,7 +172,7 @@ def fill_batch(
     num_tries,
     gen_index,
     unks,
-    no_unk_tokenizer,
+    old_style_tokenizer,
 ):
 
     # load sentences into batch until full
@@ -207,21 +208,10 @@ def fill_batch(
             sents.append(sentence_data)
             l.append(labels[next_sent])
 
-            # TODO: remove second part after debugging
             unks.append(
-                (
-                    tuple(
-                        get_unk_toks_indices(
-                            field, tokenizer, no_unk_tokenizer
-                        )
-                        for field in sentence_data[0]
-                    ),
-                    tuple(
-                        tokenizer.decode(
-                            tokenizer.encode(field, add_special_tokens=False)
-                        )
-                        for field in sentence_data[0]
-                    ),
+                tuple(
+                    get_unk_toks_indices(field, tokenizer, old_style_tokenizer)
+                    for field in sentence_data[0]
                 )
             )
 
@@ -235,66 +225,77 @@ def fill_batch(
     return sents, l, next_sent, num_gen, num_tries, gen_index, unks
 
 
-def get_unk_toks_indices(sentence, tokenizer, no_unk_tokenizer):
-    import pdb
+def get_unk_toks_indices(sentence, tokenizer, old_style_tokenizer):
+    tokenizer_class = repr(old_style_tokenizer.__class__)
+    if "models.bert" in tokenizer_class:
+        recovery_method = recover_bert_unk_alignment
+    elif "models.roberta" in tokenizer_class:
+        recovery_method = recover_roberta_unk_alignment
+    else:
+        raise UnsupportedOperation(
+            f"Unknown tokenizer class {tokenizer_class}"
+        )
 
-    pdb.set_trace()
+    # when we get to printing, the only guarantee we have is that the outputted
+    # sentence has the same number of wordpieces as the inputted sentence, so
+    # we need to use the wordpiece-based indices
+    chunks = tokenizer.tokenize(sentence)
+    unk_chunk_indices = [
+        i for i, chunk in enumerate(chunks) if chunk == tokenizer.unk_token
+    ]
 
-    new_chunks = tokenizer.tokenize(sentence)
-    no_unk_chunks = no_unk_tokenizer.tokenize(sentence)
+    unknown_strings = recovery_method(old_style_tokenizer, sentence)
 
-    indices = tokenizer.encode(sentence, add_special_tokens=False)
-    decoded = tokenizer.decode(indices)
+    # make sure no funky tokenization going on here
+    if len(unk_chunk_indices) != len(unknown_strings):
+        import pdb
 
-    sentence_chunks = sentence.split(" ")
-    tokenizer_chunks = decoded.split(" ")
-    result = []
+        pdb.set_trace()
 
-    # TODO remove the below and see if there's a way to get the no_unk_tokenizer
-    # to actually not use unks
+    mapping = {
+        idx: string for idx, string in zip(unk_chunk_indices, unknown_strings)
+    }
+    return mapping
 
-    j = 0
-    for i in range(len(tokenizer_chunks)):
-        if tokenizer_chunks[i] == tokenizer.unk_token:
-            prev = None if i == 0 else tokenizer_chunks[i - 1]
-            next = (
-                None
-                if i >= len(tokenizer_chunks) - 1
-                else tokenizer_chunks[i + 1]
-            )
-            curr_j = j
-            found = False
-            while curr_j < len(sentence_chunks):
-                j_prev: str = None if curr_j == 0 else sentence_chunks[
-                    curr_j - 1
-                ]
-                j_next: str = None if curr_j >= len(
-                    sentence_chunks
-                ) - 1 else sentence_chunks[curr_j + 1]
 
-                # we can use endswith because the tokenizer is going to
-                # only introduce whitespace, not take it away
-                # there's a chance of a false match but oh well...
-                prev_ok = (j_prev is None and prev is None) or (
-                    j_prev is not None
-                    and prev is not None
-                    and j_prev.endswith(prev)
-                )
-                next_ok = (j_next is None and next is None) or (
-                    j_next is not None
-                    and next is not None
-                    and j_next.startswith(next)
-                )
-                if prev_ok and next_ok:
-                    # masking/filling isn't going to introduce any more tokens,
-                    # so the whitespace indexing here is correct from now on
-                    result.append((i, sentence_chunks[j]))
-                    found = True
-                    break
-                curr_j += 1
-            if found:
-                # only want to update if we've found something
-                j = curr_j + 1
+def recover_bert_unk_alignment(bert_tokenizer, text):
+    # based on https://github.com/huggingface/transformers/issues/9714
+    assert (
+        not hasattr(bert_tokenizer, "basic_tokenizer")
+        or not bert_tokenizer.basic_tokenizer.never_split
+    )
+    whitespace_tokens = (
+        bert_tokenizer.basic_tokenizer.tokenize(
+            text, never_split=bert_tokenizer.all_special_tokens
+        )
+        if bert_tokenizer.do_basic_tokenize
+        else text.strip().split()
+    )
 
-    return result
+    ids = [
+        bert_tokenizer(piece, add_special_tokens=False)["input_ids"]
+        for piece in whitespace_tokens
+    ]
+    # whitespace-based indices of unk tokens
+    unk_indices = [
+        i
+        for i, encoded in enumerate(ids)
+        if bert_tokenizer.unk_token_id in encoded
+    ]
+    # strings corresponding to them
+    unknown_strings = [
+        piece for i, piece in enumerate(whitespace_tokens) if i in unk_indices
+    ]
+
+    return unknown_strings
+
+
+def recover_roberta_unk_alignment(roberta_tokenizer, text):
+    tokenized = roberta_tokenizer.tokenize(text)
+
+    if roberta_tokenizer.unk_token in tokenized:
+        import pdb
+
+        pdb.set_trace()
+    return []
 
